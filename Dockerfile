@@ -1,7 +1,7 @@
 # ==========================================
 # STAGE 1: Build the app using Gradle
 # ==========================================
-FROM gradle:8.5-jdk17 AS build
+FROM gradle:8.11.1-jdk17 AS build
 
 # Copy your source code into the container
 COPY --chown=gradle:gradle . /home/gradle/src
