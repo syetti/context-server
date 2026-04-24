@@ -8,7 +8,7 @@ COPY --chown=gradle:gradle . /home/gradle/src
 WORKDIR /home/gradle/src
 
 # Run your Fat JAR build command
-RUN gradle buildFatJar --no-daemon
+RUN gradle buildFatJar --no-daemon -Dkotlin.compiler.execution.strategy=in-process
 
 # ==========================================
 # STAGE 2: Create a tiny runtime image
