@@ -1,26 +1,46 @@
 # ==========================================
-# STAGE 1: Build the app using Gradle
+# STAGE 1: Build (Using Gradle Wrapper)
 # ==========================================
-FROM gradle:8.11.1-jdk17 AS build
+# We use a lightweight JDK image instead of a heavy Gradle image
+FROM eclipse-temurin:17-jdk-alpine AS build
+WORKDIR /app
 
-# Copy your source code into the container
-COPY --chown=gradle:gradle . /home/gradle/src
-WORKDIR /home/gradle/src
+# 1. Copy the Gradle Wrapper files FIRST
+COPY gradlew .
+COPY gradle/ gradle/
 
-# Run your Fat JAR build command
-RUN ./gradlew clean buildFatJar --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+# Ensure the wrapper script has execute permissions (fixes Windows-to-Linux deployment bugs)
+RUN chmod +x ./gradlew
+
+# 2. Copy your build scripts
+COPY build.gradle.kts settings.gradle.kts ./
+# If you have a gradle.properties file, copy it too by uncommenting the next line:
+# COPY gradle.properties ./
+
+# 3. Copy your actual Kotlin source code
+COPY src/ src/
+
+# 4. Build the Fat JAR safely using the Wrapper
+# --no-daemon and in-process prevent background tasks
+# --stop guarantees the environment is clean for DigitalOcean's snapshot
+RUN ./gradlew clean buildFatJar --no-daemon -Dkotlin.compiler.execution.strategy=in-process && ./gradlew --stop
 
 # ==========================================
-# STAGE 2: Create a tiny runtime image
+# STAGE 2: Run (Using tiny JRE)
 # ==========================================
+# We switch to an even smaller JRE (Java Runtime Environment) since we don't need the compiler anymore
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
-# Copy ONLY the compiled JAR file from Stage 1 (leaves all the heavy source code behind)
-COPY --from=build /home/gradle/src/build/libs/*-all.jar /app/server.jar
+# Best Practice: Create a non-root user for security
+RUN addgroup -S ktor && adduser -S ktor -G ktor
+USER ktor
 
-# Expose the port (DigitalOcean will automatically map this)
+# Copy ONLY the compiled Fat JAR from the build stage
+COPY --from=build /app/build/libs/*-all.jar /app/server.jar
+
+# Expose the port (DigitalOcean automatically maps this to your public URL)
 EXPOSE 8000
 
-# Tell Docker how to start the server
+# Start the server
 CMD ["java", "-jar", "/app/server.jar"]
