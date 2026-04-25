@@ -16,21 +16,16 @@ import java.io.File
 import java.util.UUID
 
 fun Application.configureRouting() {
-
-    // 1. Setup API Keys and Clients
     val aaiApiKey = System.getenv("ASSEMBLYAI_API_KEY") ?: ""
     val humeApiKey = System.getenv("HUME_API_KEY") ?: ""
     val httpClient = OkHttpClient()
     val jsonParser = Gson()
 
-    // 2. Define the API Routes
     routing {
-
         post("/analyze-audio") {
             val multipartData = call.receiveMultipart()
             val tempFile = File("temp_${UUID.randomUUID()}.m4a")
 
-            // Save uploaded file from the mobile app
             multipartData.forEachPart { part ->
                 if (part is PartData.FileItem) {
                     val fileBytes = part.provider().toByteArray()
@@ -40,7 +35,7 @@ fun Application.configureRouting() {
             }
 
             try {
-                // --- ASSEMBLY AI (Upload) ---
+                // Upload audio to AssemblyAI for transcription
                 val uploadRequest = Request.Builder()
                     .url("https://api.assemblyai.com/v2/upload")
                     .addHeader("Authorization", aaiApiKey)
@@ -55,7 +50,6 @@ fun Application.configureRouting() {
                 }
                 val uploadUrl = jsonParser.fromJson(uploadBody, JsonObject::class.java).get("upload_url").asString
 
-                // --- ASSEMBLY AI (Transcribe) ---
                 val aaiJson = """
                     {
                         "audio_url": "$uploadUrl",
@@ -79,7 +73,6 @@ fun Application.configureRouting() {
                 }
                 val transcriptId = jsonParser.fromJson(transcriptBody, JsonObject::class.java).get("id").asString
 
-                // Poll AssemblyAI
                 var utterancesList = listOf<Map<String, String>>()
                 var aaiDone = false
                 while (!aaiDone) {
@@ -110,7 +103,7 @@ fun Application.configureRouting() {
                     }
                 }
 
-                // --- HUME AI (Emotion Analysis) ---
+                // Send audio to Hume AI for prosody (emotion) analysis
                 val requestBody = MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("json", "{\"models\": {\"prosody\": {}}}")
@@ -132,7 +125,6 @@ fun Application.configureRouting() {
 
                 val jobId = jsonParser.fromJson(humeBody, JsonObject::class.java).get("job_id").asString
 
-                // Poll Hume
                 var isDone = false
                 while (!isDone) {
                     Thread.sleep(2000)
@@ -153,7 +145,6 @@ fun Application.configureRouting() {
                     }
                 }
 
-                // Parse Hume Results
                 val resultsReq = Request.Builder()
                     .url("https://api.hume.ai/v0/batch/jobs/$jobId/predictions")
                     .addHeader("X-Hume-Api-Key", humeApiKey)
@@ -163,27 +154,18 @@ fun Application.configureRouting() {
                 val resultsBody = resultsResponse.body?.string() ?: ""
                 if (!resultsResponse.isSuccessful) throw Exception("Hume AI Results Failed: $resultsBody")
 
-                println("=== TRUE HUME RESULTS ===")
-                println(resultsBody)
-                println("=========================")
-
                 val resultsArray = jsonParser.fromJson(resultsBody, com.google.gson.JsonArray::class.java)
 
-                // Safely extract and average top emotions across the ENTIRE audio file
+                // Extract top 3 emotions and average their scores across all predictions
                 val topEmotions = try {
                     val resultsObj = resultsArray.get(0).asJsonObject.getAsJsonObject("results")
 
-                    // 1. Did Hume return an error about the audio file?
                     if (resultsObj.has("errors") && !resultsObj.getAsJsonArray("errors").isEmpty) {
-                        println("HUME ERROR DETECTED: " + resultsObj.getAsJsonArray("errors").toString())
                         emptyList()
                     }
-                    // 2. Did Hume return a null prediction?
                     else if (!resultsObj.has("predictions") || resultsObj.get("predictions").isJsonNull) {
-                        println("HUME RETURNED NULL PREDICTIONS!")
                         emptyList()
                     }
-                    // 3. If no errors, calculate the average emotions!
                     else {
                         val predictions = resultsObj.getAsJsonArray("predictions")
                         if (predictions.isEmpty) {
@@ -196,10 +178,8 @@ fun Application.configureRouting() {
 
                             val emotionTotals = mutableMapOf<String, Double>()
 
-                            // Loop through every fraction of a second of audio
                             for (i in 0 until allPredictions.size()) {
                                 val emotionsArray = allPredictions.get(i).asJsonObject.getAsJsonArray("emotions")
-                                // Add each emotion's score to our running total
                                 for (j in 0 until emotionsArray.size()) {
                                     val emotion = emotionsArray.get(j).asJsonObject
                                     val name = emotion.get("name").asString
@@ -208,19 +188,16 @@ fun Application.configureRouting() {
                                 }
                             }
 
-                            // Sort by highest combined score, take the top 3, and average them
                             emotionTotals.entries
                                 .sortedByDescending { it.value }
                                 .take(3)
                                 .map { mapOf("name" to it.key, "score" to (it.value / allPredictions.size())) }
                         }
                     }
-                } catch (e: Exception) {
-                    println("HUME PARSING CRASH: ${e.message}")
+                } catch (_: Exception) {
                     emptyList()
                 }
 
-                // --- RETURN DATA TO MOBILE APP ---
                 call.respond(
                     mapOf(
                         "status" to "success",
@@ -230,7 +207,6 @@ fun Application.configureRouting() {
                 )
 
             } catch (e: Exception) {
-                // Safely handle errors so the app doesn't crash on a bad response
                 call.respond(
                     mapOf(
                         "status" to "error",
@@ -238,7 +214,6 @@ fun Application.configureRouting() {
                     )
                 )
             } finally {
-                // Delete the file from the server so the hard drive doesn't fill up
                 if (tempFile.exists()) tempFile.delete()
             }
         }
